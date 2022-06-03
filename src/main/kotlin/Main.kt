@@ -1,15 +1,37 @@
-import com.google.gson.*
+import com.google.gson.Gson
+import com.google.gson.JsonArray
+import com.google.gson.JsonObject
 import com.google.gson.reflect.TypeToken
 import java.io.File
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.nio.channels.Channels
+import java.nio.channels.FileChannel
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.StandardOpenOption
+import java.security.MessageDigest
 
 fun HttpClient.get(uri: String): String {
     val request = HttpRequest.newBuilder(URI(uri)).GET().build();
     val response = this.send(request, HttpResponse.BodyHandlers.ofString())
     return response.body()
+}
+
+fun HttpClient.download(uri: String, path: Path) {
+    val request = HttpRequest.newBuilder(URI(uri)).GET().build();
+    val response = this.send(request, HttpResponse.BodyHandlers.ofInputStream())
+
+    Files.createDirectories(path.parent)
+    FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.WRITE).use { outputChannel ->
+        response.body().use { inputStream ->
+            Channels.newChannel(inputStream).use { inputChannel ->
+                outputChannel.transferFrom(inputChannel, 0, Long.MAX_VALUE)
+            }
+        }
+    }
 }
 
 inline fun <reified T> Gson.fromJson(json: String): T {
@@ -24,6 +46,8 @@ fun main() {
 
     val index = gson.fromJson<JsonArray>(httpClient.get("https://betacraft.uk/server-archive/server_index.json"))
     val manifest = gson.fromJson<JsonObject>(httpClient.get("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"))
+
+    val artifacts = HashMap<String, JsonObject>();
 
     manifest["versions"].asJsonArray.map { it.asJsonObject }.parallelStream().forEach { version ->
         val id = version["id"].asString
@@ -70,10 +94,55 @@ fun main() {
                         }
                     }
 
-                    library.addProperty("name", "${groupId}:${name}:2.9.4-babric.1")
-                    library.addProperty("url", "https://maven.glass-launcher.net/releases/")
                     library.remove("downloads")
                     library.remove("rules")
+
+                    val version = "2.9.4-babric.1"
+                    val mavenUrl = "https://maven.glass-launcher.net/babric/"
+
+                    fun getArtifact(classifier: String? = null): JsonObject {
+                        val path = "${groupId.replace('.', '/')}/$name/$version/$name-$version${if (classifier != null) "-$classifier" else ""}.jar"
+                        val url = mavenUrl + path
+
+                        artifacts[url]?.let { return it }
+
+                        synchronized(artifacts) {
+                            artifacts[url]?.let { return it }
+
+                            val downloadedPath = Path.of("build", "tmp", path)
+
+                            if (!Files.exists(downloadedPath)) {
+                                println("Downloading $url")
+                                httpClient.download(url, downloadedPath)
+                            }
+
+                            return JsonObject().apply {
+                                addProperty("path", path)
+                                addProperty("url", url)
+                                addProperty("size", Files.size(downloadedPath))
+                                addProperty("sha1", MessageDigest.getInstance("SHA-1").digest(Files.readAllBytes(downloadedPath)).joinToString(separator = "", transform = { "%02x".format(it) }))
+
+                                artifacts[url] = this
+                            }
+                        }
+                    }
+
+                    library.addProperty("name", "${groupId}:${name}:${version}")
+                    library.addProperty("url", mavenUrl)
+
+                    library.add("downloads", JsonObject().apply {
+                        if (library.has("natives")) {
+                            add("classifiers", JsonObject().apply {
+                                library["natives"].asJsonObject.entrySet().forEach {
+                                    val classifier = it.value.asString
+                                    add(classifier, getArtifact(classifier))
+                                }
+                            })
+                        } else {
+                            add("artifact", getArtifact())
+                        }
+                    })
+
                     changed = true
                 }
             }
