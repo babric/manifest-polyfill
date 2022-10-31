@@ -15,13 +15,13 @@ import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 
 fun HttpClient.get(uri: String): String {
-    val request = HttpRequest.newBuilder(URI(uri)).GET().build();
+    val request = HttpRequest.newBuilder(URI(uri)).GET().build()
     val response = this.send(request, HttpResponse.BodyHandlers.ofString())
     return response.body()
 }
 
 fun HttpClient.download(uri: String, path: Path) {
-    val request = HttpRequest.newBuilder(URI(uri)).GET().build();
+    val request = HttpRequest.newBuilder(URI(uri)).GET().build()
     val response = this.send(request, HttpResponse.BodyHandlers.ofInputStream())
 
     Files.createDirectories(path.parent)
@@ -35,19 +35,25 @@ fun HttpClient.download(uri: String, path: Path) {
 }
 
 inline fun <reified T> Gson.fromJson(json: String): T {
-    val t = object : TypeToken<T>() {}.type;
+    val t = object : TypeToken<T>() {}.type
     return this.fromJson(json, t) as T
 }
 
+fun sha1(input: ByteArray): String {
+    return MessageDigest.getInstance("SHA-1")
+        .digest(input)
+        .joinToString(separator = "", transform = { "%02x".format(it) })
+}
+
 fun main() {
-    val gson = Gson();
+    val gson = Gson()
     val httpClient = HttpClient.newHttpClient()
     val out = File("out").apply { mkdir() }
 
     val index = gson.fromJson<JsonArray>(httpClient.get("https://betacraft.uk/server-archive/server_index.json"))
     val manifest = gson.fromJson<JsonObject>(httpClient.get("https://launchermeta.mojang.com/mc/game/version_manifest_v2.json"))
 
-    val artifacts = HashMap<String, JsonObject>();
+    val artifacts = HashMap<String, JsonObject>()
 
     manifest["versions"].asJsonArray.map { it.asJsonObject }.parallelStream().forEach { version ->
         val id = version["id"].asString
@@ -120,7 +126,7 @@ fun main() {
                                 addProperty("path", path)
                                 addProperty("url", url)
                                 addProperty("size", Files.size(downloadedPath))
-                                addProperty("sha1", MessageDigest.getInstance("SHA-1").digest(Files.readAllBytes(downloadedPath)).joinToString(separator = "", transform = { "%02x".format(it) }))
+                                addProperty("sha1", sha1(Files.readAllBytes(downloadedPath)))
 
                                 artifacts[url] = this
                             }
@@ -149,8 +155,10 @@ fun main() {
         }
 
         if (changed) {
+            val bytes = gson.toJson(versionInfo).toByteArray()
             version.addProperty("url", "https://babric.github.io/manifest-polyfill/$id.json")
-            File(out, "$id.json").writeText(gson.toJson(versionInfo))
+            version.addProperty("sha1", sha1(bytes))
+            File(out, "$id.json").writeBytes(bytes)
         }
     }
 
