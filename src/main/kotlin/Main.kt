@@ -55,7 +55,19 @@ fun main() {
 
     val artifacts = HashMap<String, JsonObject>()
 
-    manifest["versions"].asJsonArray.map { it.asJsonObject }.parallelStream().forEach { version ->
+    val serverIndexes = HashMap<String, JsonObject>()
+
+    //populate server indexes
+    index.asJsonArray.map { it.asJsonObject }
+        .reversed() // it'll fetch in reverse, so we should get the 'latest' possible server for our client (contains snapshots!!)
+        .forEach { serverInfo ->
+        serverInfo.asJsonObject["compatible_clients"].asJsonArray.map { it.asString }.forEach { clientVersion ->
+            // ehhhhhh i mean it works..
+            serverIndexes[clientVersion.split("-")[0]] = serverInfo
+        }
+    }
+
+    manifest["versions"].asJsonArray.map { it.asJsonObject }.forEach { version ->
         val id = version["id"].asString
         val url = version["url"].asString
 
@@ -64,8 +76,16 @@ fun main() {
 
         var changed = false
 
+        // fill missing servers infos
         if (!downloads.has("server")) {
-            val serverInfo = index.singleOrNull { it.asJsonObject["names"].asJsonArray.map { it.asString }.contains(id) }?.asJsonObject
+            var fixedId = id
+
+            if(id == "1.0") fixedId = "1.0.0" // hardcoded fixes maybe someone could find a better way ?,
+            if(id == "a1.2.2a") fixedId = "a1.2.2"
+            if(id == "a1.2.2b") fixedId = "a1.2.2"
+            if(id == "b1.3b") fixedId = "b1.3"
+
+            val serverInfo = serverIndexes[fixedId]
 
             if (serverInfo != null) {
                 val formats = serverInfo["available_formats"].asJsonArray
